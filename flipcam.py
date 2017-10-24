@@ -1,103 +1,123 @@
-import numpy as np
 import cv2
 import time
-import argparse
 import threading
 import queue
-
-parser = argparse.ArgumentParser(description='Simple demo for WebCam flipping')
-parser.add_argument('-i', '--interval', default=30, type=float,
-                    help='Minimal interval between frame, '
-                    'in milliseconds, default is 50')
-parser.add_argument('-c', '--camera', default=0, type=int,
-                    help='Camera ID, an integer, '
-                    'default is 0')
-parser.add_argument('-q', '--quit-button', default='q',
-                    help='Button to quit the window, '
-                    'in lowercase, default is q')
-
-parser.add_argument('-p', '--pct', default=0.5, type=float,
-                    help='PCT')
-
-FLAGS = parser.parse_args()
+import fire
 
 
 class StreamCameraReader:
     def __init__(self, camera_id):
         self._stream_buffer = queue.LifoQueue(1)
-        self._cap = cv2.VideoCapture(camera_id)
+        self._camera_id = camera_id
 
         self.stop_flag = False
 
     def start(self):
         def read_frames():
+            cap = cv2.VideoCapture(self._camera_id)
             succeed = True
             while not self.stop_flag and succeed:
-                succeed, frame = self._cap.read()
+                succeed, frame = cap.read()
                 if self._stream_buffer.full():
                     self._stream_buffer.get()
                 self._stream_buffer.put(frame)
+            cap.release()
 
-        worker = threading.Thread(target=read_frames)
-        worker.start()
+        self._worker = threading.Thread(target=read_frames)
+        self._worker.start()
 
     def get_frame(self):
         return self._stream_buffer.get()
 
+    def stop(self):
+        self.stop_flag = True
 
-dt0, dt1, dt2 = 0, 0, 0
-i = 0
+    def join(self):
+        self._worker.join()
 
-fps = 0
 
-camera_reader = StreamCameraReader(FLAGS.camera)
-camera_reader.start()
+def show_flipped(camera, interval, pct):
+    camera = int(camera)
+    interval = float(interval)
+    pct = float(pct)
 
-while True:
-    t_epoch = time.time()
-    t0 = time.time()
-    # Capture frame-by-frame
-    frame = camera_reader.get_frame()
-    dt0 += time.time() - t0
-    t0 = time.time()
+    camera_reader = StreamCameraReader(camera)
+    camera_reader.start()
 
-    # downsampling
-    H0, W0, _ = frame.shape
-    new_size = (int(W0 * FLAGS.pct), int(H0 * FLAGS.pct))
-    frame = cv2.resize(frame, new_size)
+    dt0, dt1, dt2 = 0, 0, 0
+    i = 0
 
-    # flip the first dimension
-    frame_f = frame[::-1, ::-1, :]
+    while True:
+        t_epoch = time.time()
+        t0 = time.time()
+        # Capture frame-by-frame
+        frame = camera_reader.get_frame()
+        dt0 += time.time() - t0
+        t0 = time.time()
 
-    dt1 += time.time() - t0
-    t0 = time.time()
+        # downsampling
+        H0, W0, _ = frame.shape
+        new_size = (int(W0 * pct), int(H0 * pct))
+        frame = cv2.resize(frame, new_size)
 
-    # Display the resulting frame
-    cv2.imshow('WebCam Stream', frame_f)
+        # flip the first dimension
+        frame_f = frame[::-1, ::-1, :]
 
-    dt2 += time.time() - t0
-    t0 = time.time()
+        dt1 += time.time() - t0
+        t0 = time.time()
 
-    dt = time.time() - t_epoch
+        # Display the resulting frame
+        cv2.imshow('WebCam Stream', frame_f)
 
-    residual_interval_ms = int(max(FLAGS.interval - dt * 1000, 1))
+        dt2 += time.time() - t0
+        t0 = time.time()
 
-    fps = 1 / (residual_interval_ms / 1000 + dt)
+        dt = time.time() - t_epoch
 
-    i += 1
-    key = cv2.waitKey(residual_interval_ms) & 0xFF
+        residual_interval_ms = int(max(interval - dt * 1000, 1))
 
-    if key == ord('q'):
-        camera_reader.stop_flag = True
-        break
+        fps = 1 / (residual_interval_ms / 1000 + dt)
 
-    print('FPS=%.2f' % fps)
+        i += 1
+        key = cv2.waitKey(residual_interval_ms) & 0xFF
 
-print('Report of time cost')
-print('Frame capture: %.2fms' % (dt0 / i * 1000))
-print('Fliping: %.2fms' % (dt1 / i * 1000))
-print('Frame display %.2fms' % (dt2 / i * 1000))
+        if key == ord('q'):
+            camera_reader.stop()
+            break
 
-# When everything done, release the capture
-cap.release()
-cv2.destroyAllWindows()
+        if key == ord('c'):
+            cv2.imwrite('sample.jpg', frame)
+            print('Image saved')
+
+        print('FPS=%.2f' % fps)
+
+    print('Report of time cost')
+    print('Frame capture: %.2fms' % (dt0 / i * 1000))
+    print('Fliping: %.2fms' % (dt1 / i * 1000))
+    print('Frame display %.2fms' % (dt2 / i * 1000))
+
+    cv2.destroyAllWindows()
+    camera_reader.join()
+
+
+class Main:
+    def show_flipped(self, camera=0, interval=10, pct=0.5):
+        # Show flipped camera stream
+        # camera: Camera ID, an integer, default is 0
+        # interval: Minimal interval between frame, in milliseconds,
+        # default is 50
+        # pct: Downsampling rate (for faster display speed)
+        show_flipped(camera, interval, pct)
+
+    def capture_sample(self, camera=0, output='sample.jpg'):
+        # Capture an single image
+        camera_reader = StreamCameraReader(camera)
+        camera_reader.start()
+        frame = camera_reader.get_frame()
+        cv2.imwrite(output, frame)
+        camera_reader.stop()
+        camera_reader.join()
+
+
+if __name__ == '__main__':
+    fire.Fire(Main)
